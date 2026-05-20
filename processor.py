@@ -1,96 +1,48 @@
 import os
 import json
-import tempfile
 import logging
-import yt_dlp
-import whisper
 import anthropic
 
 logger = logging.getLogger(__name__)
 
-# Cargamos el modelo de Whisper una sola vez (small = buen balance velocidad/precisión)
-_whisper_model = None
-
-def get_whisper_model():
-    global _whisper_model
-    if _whisper_model is None:
-        logger.info("Cargando modelo Whisper...")
-        _whisper_model = whisper.load_model("small")
-    return _whisper_model
-
-
-def descargar_audio(url: str, output_path: str) -> str:
-    """Descarga el audio del video y lo guarda como MP3."""
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": output_path,
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "128",
-        }],
-        "quiet": True,
-        "no_warnings": True,
-        "cookiesfrombrowser": None,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-    return output_path + ".mp3"
-
-
-def transcribir_audio(audio_path: str) -> str:
-    """Transcribe el audio usando Whisper."""
-    model = get_whisper_model()
-    result = model.transcribe(audio_path, language="es")
-    return result["text"].strip()
-
-
-def extraer_recomendacion(transcripcion: str) -> dict | None:
-    """Usa Claude para extraer la recomendación de la transcripción."""
+def extraer_recomendacion(texto_usuario: str) -> dict | None:
+    """Usa Claude para analizar el texto enviado por el usuario y extraer la recomendación."""
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-    prompt = f"""Analizá esta transcripción de un video corto y determiná si recomienda un libro, película o serie.
+    prompt = f"""Analizá el siguiente texto enviado por un usuario y determiná si menciona o recomienda un libro, película o serie. 
+Extrae el título correcto de la obra, clasificala y haz un breve resumen o descripción basado en lo que dice el usuario o en tu propio conocimiento si el texto es muy corto.
 
-TRANSCRIPCIÓN:
-{transcripcion[:3000]}
+TEXTO DEL USUARIO:
+{texto_usuario}
 
-Si hay una recomendación clara, respondé SOLO con un JSON válido con este formato exacto:
+Respondé SOLO con un JSON válido con este formato exacto:
 {{
   "titulo": "Nombre exacto del libro/película/serie",
   "categoria": "libro" | "película" | "serie",
-  "descripcion": "Por qué lo recomiendan, en 1-2 oraciones cortas y concretas"
+  "descripcion": "Breve reseña o de qué trata, en 1-2 oraciones cortas y concretas"
 }}
 
-Si NO hay una recomendación clara de libro/película/serie, respondé exactamente: null"""
+Si el texto NO habla de ninguna recomendación de libro, película o serie, respondé exactamente: null"""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=300,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
 
-    texto = message.content[0].text.strip()
-    if texto.lower() == "null":
+        texto_respuesta = message.content[0].text.strip()
+        if texto_respuesta.lower() == "null":
+            return None
+
+        # Limpiar posibles bloques de código markdown que meta la IA
+        texto_respuesta = texto_respuesta.replace("```json", "").replace("```", "").strip()
+        return json.loads(texto_respuesta)
+    except Exception as e:
+        logger.error(f"Error al conectar con Claude: {e}")
         return None
 
-    # Limpiar posibles backticks
-    texto = texto.replace("```json", "").replace("```", "").strip()
-    return json.loads(texto)
-
-
-def procesar_video(url: str) -> dict | None:
-    """Pipeline completo: descarga → transcribe → extrae recomendación."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        audio_base = os.path.join(tmpdir, "audio")
-        logger.info(f"Descargando: {url}")
-        audio_path = descargar_audio(url, audio_base)
-
-        logger.info("Transcribiendo...")
-        transcripcion = transcribir_audio(audio_path)
-        logger.info(f"Transcripción: {transcripcion[:100]}...")
-
-        logger.info("Extrayendo recomendación...")
-        resultado = extraer_recomendacion(transcripcion)
-        logger.info(f"Resultado: {resultado}")
-
-        return resultado
+def procesar_video(texto: str) -> dict | None:
+    """Mantiene la estructura original pero procesa el texto directamente."""
+    logger.info(f"Procesando texto: {texto[:50]}...")
+    return extraer_recomendacion(texto)
