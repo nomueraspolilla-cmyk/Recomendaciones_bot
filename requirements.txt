@@ -1,4 +1,0 @@
-python-telegram-bot==21.6
-yt-dlp==2024.11.18
-faster-whisper==1.0.3
-anthropic>=0.40.0
